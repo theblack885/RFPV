@@ -1,10 +1,10 @@
 package com.vault.recover
 
+import android.Manifest
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -43,29 +43,51 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         if (Build.VERSION.SDK_INT >= 33) {
-            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
         setContent {
             VaultTheme {
-                Screen(access) {
-                    startActivity(
-                        Intent(
-                            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                            Uri.parse("package:$packageName")
-                        )
-                    )
-                }
+                Screen(access) { askAccess() }
             }
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        access = Environment.isExternalStorageManager()
+    private fun askAccess() {
+        if (Build.VERSION.SDK_INT >= 30) {
+            startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    Uri.parse("package:$packageName")
+                )
+            )
+        } else {
+            requestPermissions(
+                arrayOf(
+                    Manifest.permission.READ_EXTERNAL_STORAGE,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE
+                ), 2
+            )
+        }
+    }
+
+    private fun refresh() {
+        access = Engine.hasAccess(this)
         if (access) {
             Scheduler.arm(this)
             ContextCompat.startForegroundService(this, Intent(this, WatchService::class.java))
         }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        refresh()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refresh()
     }
 }
 
@@ -170,7 +192,7 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
             // ---------- Action ----------
             item {
                 if (!access) {
-                    GradientButton("All files access allow karo", Modifier.fillMaxWidth(), onClick = onAllow)
+                    GradientButton("Storage access allow karo", Modifier.fillMaxWidth(), onClick = onAllow)
                 } else {
                     GradientButton(
                         if (busy) "Backup ho raha hai..." else "⚡  Abhi scan & backup karo",
