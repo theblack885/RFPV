@@ -93,7 +93,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private fun fmtSize(b: Long): String = when {
+fun fmtSize(b: Long): String = when {
     b >= 1L shl 30 -> "%.1f GB".format(b / 1073741824.0)
     b >= 1L shl 20 -> "%.1f MB".format(b / 1048576.0)
     b >= 1L shl 10 -> "%.0f KB".format(b / 1024.0)
@@ -105,15 +105,22 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val dao = remember { AppDb.get(ctx).dao() }
-    val all by dao.all().collectAsState(initial = emptyList())
-    var tab by remember { mutableIntStateOf(0) }
+    val allItems by dao.all().collectAsState(initial = emptyList())
+    val all = allItems.filter { it.deletedAt != null }      // sirf deleted files
     var cat by remember { mutableStateOf(Cat.ALL) }
     var busy by remember { mutableStateOf(false) }
+    var preview by remember { mutableStateOf<Item?>(null) }
+    val free = remember(all.size, busy) { Engine.freeBytes(ctx) }
 
-    val deleted = all.count { it.deletedAt != null }
-    val base = if (tab == 0) all.filter { it.deletedAt != null } else all
-    val list = if (cat == Cat.ALL) base else base.filter { catOf(it) == cat }
-    val frac = if (all.isEmpty()) 0f else (deleted.toFloat() / all.size).coerceAtLeast(0.04f)
+    val list = if (cat == Cat.ALL) all else all.filter { catOf(it) == cat }
+    val frac = if (all.isEmpty()) 0.04f else 1f
+
+    fun doRestore(item: Item) {
+        scope.launch {
+            val msg = try { Engine.restore(ctx, item) } catch (e: Exception) { "Error: ${e.message}" }
+            Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+        }
+    }
 
     Box(
         Modifier.fillMaxSize()
@@ -138,7 +145,7 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("Vault Recover", fontSize = 30.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
-                        Text("Delete hua? Ab koi tension nahi.", color = Ui.Muted, fontSize = 13.sp)
+                        Text("Delete hui files wapas lao.", color = Ui.Muted, fontSize = 13.sp)
                     }
                     Row(
                         Modifier.clip(CircleShape).background(Ui.Glass)
@@ -153,6 +160,22 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                 }
             }
 
+            // ---------- Low storage warning ----------
+            if (free < Engine.RESERVE) {
+                item {
+                    GlassCard(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(14.dp)) {
+                            Text("⚠️  Phone ki storage kam hai", fontWeight = FontWeight.Bold, color = Ui.Amber, fontSize = 14.sp)
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Sirf ${fmtSize(free)} khali hai. Nayi deleted files vault me copy nahi ho paengi. Kuch jagah khali karo.",
+                                fontSize = 12.sp, color = Ui.Muted, lineHeight = 17.sp
+                            )
+                        }
+                    }
+                }
+            }
+
             // ---------- Hero ring ----------
             item {
                 GlassCard(Modifier.fillMaxWidth()) {
@@ -162,19 +185,19 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                     ) {
                         Ring(frac, Modifier.size(132.dp)) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("$deleted", fontSize = 38.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
-                                Text("deleted", fontSize = 12.sp, color = Ui.Muted)
+                                Text("${all.size}", fontSize = 38.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+                                Text("mili", fontSize = 12.sp, color = Ui.Muted)
                             }
                         }
                         Spacer(Modifier.width(20.dp))
                         Column {
                             Text(
-                                if (deleted == 0) "Sab kuch safe hai" else "Recover ke liye ready",
+                                if (all.isEmpty()) "Abhi kuch nahi mila" else "Recover ke liye ready",
                                 fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White
                             )
                             Spacer(Modifier.height(6.dp))
                             Text(
-                                "Delete ya trash khali hone ke baad bhi files vault me original quality me rehti hain.",
+                                "Gallery ke trash me padi deleted files yahan dikhti hain. Tap karo, preview dekho, phir recover karo.",
                                 fontSize = 12.sp, color = Ui.Muted, lineHeight = 17.sp
                             )
                         }
@@ -185,9 +208,9 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
             // ---------- Stats ----------
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    StatTile("Backup", "${all.size}", Ui.Violet, Modifier.weight(1f))
-                    StatTile("Storage", fmtSize(all.sumOf { it.size }), Ui.Cyan, Modifier.weight(1f))
-                    StatTile("Apps", "${all.count { it.type == "APP" }}", Ui.Green, Modifier.weight(1f))
+                    StatTile("Deleted files", "${all.size}", Ui.Violet, Modifier.weight(1f))
+                    StatTile("Vault size", fmtSize(all.sumOf { it.size }), Ui.Cyan, Modifier.weight(1f))
+                    StatTile("Khali jagah", fmtSize(free), Ui.Green, Modifier.weight(1f))
                 }
             }
 
@@ -197,40 +220,18 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                     GradientButton("Storage access allow karo", Modifier.fillMaxWidth(), onClick = onAllow)
                 } else {
                     GradientButton(
-                        if (busy) "Backup ho raha hai..." else "⚡  Abhi scan & backup karo",
+                        if (busy) "Dhundh raha hoon..." else "🔍  Deleted files dhundo",
                         Modifier.fillMaxWidth(), enabled = !busy
                     ) {
                         scope.launch {
                             busy = true
-                            val n = Engine.sync(ctx)
+                            val n = try { Engine.sync(ctx, true) } catch (e: Exception) { 0 }
                             busy = false
-                            Toast.makeText(ctx, "$n naye item backup hue", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                }
-            }
-
-            // ---------- Pill tabs ----------
-            item {
-                val pill = RoundedCornerShape(18.dp)
-                Row(
-                    Modifier.fillMaxWidth().clip(pill).background(Ui.Glass)
-                        .border(1.dp, Ui.GlassBorder, pill).padding(4.dp)
-                ) {
-                    listOf("Deleted ($deleted)", "Sab backup (${all.size})").forEachIndexed { i, t ->
-                        val on = tab == i
-                        Box(
-                            Modifier.weight(1f).clip(RoundedCornerShape(14.dp))
-                                .background(if (on) Ui.Main else Brush.horizontalGradient(listOf(Color.Transparent, Color.Transparent)))
-                                .clickable { tab = i }
-                                .padding(vertical = 11.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                t, fontSize = 13.sp,
-                                fontWeight = if (on) FontWeight.Bold else FontWeight.Medium,
-                                color = if (on) Color.White else Ui.Muted
-                            )
+                            Toast.makeText(
+                                ctx,
+                                if (n > 0) "$n nayi deleted file mili" else "Koi nayi deleted file nahi mili",
+                                Toast.LENGTH_SHORT
+                            ).show()
                         }
                     }
                 }
@@ -265,29 +266,38 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                         Modifier.fillMaxWidth().padding(vertical = 40.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text(if (tab == 0) "🛡️" else "📭", fontSize = 48.sp)
+                        Text("🛡️", fontSize = 48.sp)
                         Spacer(Modifier.height(10.dp))
                         Text(
-                            if (tab == 0) "Abhi koi deleted item nahi" else "Abhi kuch backup nahi hua",
+                            "Trash me abhi koi deleted file nahi mili",
                             color = Ui.Muted, fontSize = 14.sp
                         )
                     }
                 }
             } else {
                 items(list, key = { it.id }) { item ->
-                    ItemCard(item,
-                        onRestore = {
-                            scope.launch {
-                                val msg = try { Engine.restore(ctx, item) } catch (e: Exception) { "Error: ${e.message}" }
-                                Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
-                            }
-                        },
-                        onRemove = { scope.launch { Engine.removeFromVault(ctx, item) } }
+                    ItemCard(
+                        item,
+                        onOpen = { preview = item },
+                        onRestore = { doRestore(item) }
                     )
                 }
             }
             item { Spacer(Modifier.height(20.dp)) }
         }
+    }
+
+    // ---------- Preview popup ----------
+    preview?.let { p ->
+        PreviewDialog(
+            item = p,
+            onClose = { preview = null },
+            onRestore = { doRestore(p); preview = null },
+            onRemove = {
+                scope.launch { Engine.removeFromVault(ctx, p) }
+                preview = null
+            }
+        )
     }
 }
 
@@ -297,17 +307,16 @@ fun StatTile(label: String, value: String, accent: Color, modifier: Modifier = M
         Column(Modifier.padding(14.dp)) {
             Box(Modifier.size(width = 22.dp, height = 4.dp).clip(CircleShape).background(accent))
             Spacer(Modifier.height(10.dp))
-            Text(value, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1)
+            Text(value, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1)
             Text(label, fontSize = 12.sp, color = Ui.Muted)
         }
     }
 }
 
 @Composable
-fun ItemCard(item: Item, onRestore: () -> Unit, onRemove: () -> Unit) {
+fun ItemCard(item: Item, onOpen: () -> Unit, onRestore: () -> Unit) {
     val c = catOf(item)
-    val isDeleted = item.deletedAt != null
-    GlassCard(Modifier.fillMaxWidth()) {
+    GlassCard(Modifier.fillMaxWidth().clickable(onClick = onOpen)) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
@@ -322,26 +331,19 @@ fun ItemCard(item: Item, onRestore: () -> Unit, onRemove: () -> Unit) {
                         color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        fmtSize(item.size) + "  •  " + (
-                            if (isDeleted)
-                                DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
-                                    .format(Date(item.deletedAt!!))
-                            else "Vault me safe"
-                        ),
+                        fmtSize(item.size) + "  •  " +
+                            DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+                                .format(Date(item.deletedAt ?: item.backedUpAt)),
                         fontSize = 12.sp, color = Ui.Muted, maxLines = 1
                     )
                 }
                 Spacer(Modifier.width(8.dp))
                 Box(
                     Modifier.clip(CircleShape)
-                        .background((if (isDeleted) Ui.Pink else Ui.Green).copy(alpha = 0.18f))
+                        .background(Ui.Pink.copy(alpha = 0.18f))
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
-                    Text(
-                        if (isDeleted) "Deleted" else "Safe",
-                        fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                        color = if (isDeleted) Ui.Pink else Ui.Green
-                    )
+                    Text("Deleted", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Ui.Pink)
                 }
             }
             Spacer(Modifier.height(12.dp))
@@ -350,14 +352,7 @@ fun ItemCard(item: Item, onRestore: () -> Unit, onRemove: () -> Unit) {
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(
-                    Modifier.weight(1f).clip(RoundedCornerShape(14.dp))
-                        .background(Ui.Glass)
-                        .border(1.dp, Ui.GlassBorder, RoundedCornerShape(14.dp))
-                        .clickable(onClick = onRemove)
-                        .padding(vertical = 11.dp),
-                    contentAlignment = Alignment.Center
-                ) { Text("Vault se hatao", fontSize = 13.sp, color = Ui.Muted) }
+                GlassButton("👁  Dekho", Modifier.weight(1f), onClick = onOpen)
                 GradientButton("↩  Restore", Modifier.weight(1f), onClick = onRestore)
             }
         }
