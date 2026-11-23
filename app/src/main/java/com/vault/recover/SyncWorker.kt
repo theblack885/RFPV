@@ -1,14 +1,13 @@
 package com.vault.recover
 
 import android.content.Context
-import android.os.Environment
 import android.provider.MediaStore
 import androidx.work.*
 import java.util.concurrent.TimeUnit
 
 class SyncWorker(c: Context, p: WorkerParameters) : CoroutineWorker(c, p) {
     override suspend fun doWork(): Result {
-        if (Environment.isExternalStorageManager()) Engine.sync(applicationContext)
+        if (Engine.hasAccess(applicationContext)) Engine.sync(applicationContext)
         Scheduler.arm(applicationContext)
         return Result.success()
     }
