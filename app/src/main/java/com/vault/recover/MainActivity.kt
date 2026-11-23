@@ -106,13 +106,19 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
     val scope = rememberCoroutineScope()
     val dao = remember { AppDb.get(ctx).dao() }
     val allItems by dao.all().collectAsState(initial = emptyList())
-    val all = allItems.filter { it.deletedAt != null }      // sirf deleted files
+    val all = allItems.filter { it.deletedAt != null }
+    var tab by remember { mutableIntStateOf(0) }
     var cat by remember { mutableStateOf(Cat.ALL) }
     var busy by remember { mutableStateOf(false) }
+    var scanning by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf("") }
     var preview by remember { mutableStateOf<Item?>(null) }
-    val free = remember(all.size, busy) { Engine.freeBytes(ctx) }
+    val free = remember(all.size, busy, scanning) { Engine.freeBytes(ctx) }
 
-    val list = if (cat == Cat.ALL) all else all.filter { catOf(it) == cat }
+    val trashCount = all.count { it.type == "FILE" }
+    val deepCount = all.count { it.type == "DEEP" || it.type == "CARVE" }
+    val base = all.filter { if (tab == 0) it.type == "FILE" else (it.type == "DEEP" || it.type == "CARVE") }
+    val list = if (cat == Cat.ALL) base else base.filter { catOf(it) == cat }
     val frac = if (all.isEmpty()) 0.04f else 1f
 
     fun doRestore(item: Item) {
@@ -168,7 +174,7 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                             Text("⚠️  Phone ki storage kam hai", fontWeight = FontWeight.Bold, color = Ui.Amber, fontSize = 14.sp)
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                "Sirf ${fmtSize(free)} khali hai. Nayi deleted files vault me copy nahi ho paengi. Kuch jagah khali karo.",
+                                "Sirf ${fmtSize(free)} khali hai. Nayi files vault me copy nahi ho paengi. Kuch jagah khali karo.",
                                 fontSize = 12.sp, color = Ui.Muted, lineHeight = 17.sp
                             )
                         }
@@ -197,7 +203,7 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                             )
                             Spacer(Modifier.height(6.dp))
                             Text(
-                                "Gallery ke trash me padi deleted files yahan dikhti hain. Tap karo, preview dekho, phir recover karo.",
+                                "Tap karo, preview dekho, phir gallery me recover karo.",
                                 fontSize = 12.sp, color = Ui.Muted, lineHeight = 17.sp
                             )
                         }
@@ -208,19 +214,45 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
             // ---------- Stats ----------
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    StatTile("Deleted files", "${all.size}", Ui.Violet, Modifier.weight(1f))
-                    StatTile("Vault size", fmtSize(all.sumOf { it.size }), Ui.Cyan, Modifier.weight(1f))
+                    StatTile("Trash me", "$trashCount", Ui.Violet, Modifier.weight(1f))
+                    StatTile("Deep scan", "$deepCount", Ui.Pink, Modifier.weight(1f))
                     StatTile("Khali jagah", fmtSize(free), Ui.Green, Modifier.weight(1f))
                 }
             }
 
-            // ---------- Action ----------
+            // ---------- Pill tabs ----------
+            item {
+                val pill = RoundedCornerShape(18.dp)
+                Row(
+                    Modifier.fillMaxWidth().clip(pill).background(Ui.Glass)
+                        .border(1.dp, Ui.GlassBorder, pill).padding(4.dp)
+                ) {
+                    listOf("Trash ($trashCount)", "Deep scan ($deepCount)").forEachIndexed { i, t ->
+                        val on = tab == i
+                        Box(
+                            Modifier.weight(1f).clip(RoundedCornerShape(14.dp))
+                                .background(if (on) Ui.Main else Brush.horizontalGradient(listOf(Color.Transparent, Color.Transparent)))
+                                .clickable { tab = i }
+                                .padding(vertical = 11.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                t, fontSize = 13.sp,
+                                fontWeight = if (on) FontWeight.Bold else FontWeight.Medium,
+                                color = if (on) Color.White else Ui.Muted
+                            )
+                        }
+                    }
+                }
+            }
+
+            // ---------- Actions ----------
             item {
                 if (!access) {
                     GradientButton("Storage access allow karo", Modifier.fillMaxWidth(), onClick = onAllow)
-                } else {
+                } else if (tab == 0) {
                     GradientButton(
-                        if (busy) "Dhundh raha hoon..." else "🔍  Deleted files dhundo",
+                        if (busy) "Dhundh raha hoon..." else "🔍  Trash me dhundo",
                         Modifier.fillMaxWidth(), enabled = !busy
                     ) {
                         scope.launch {
@@ -229,9 +261,49 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                             busy = false
                             Toast.makeText(
                                 ctx,
-                                if (n > 0) "$n nayi deleted file mili" else "Koi nayi deleted file nahi mili",
+                                if (n > 0) "$n nayi deleted file mili" else "Trash me koi nayi file nahi mili",
                                 Toast.LENGTH_SHORT
                             ).show()
+                        }
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        GradientButton(
+                            "🧬  Deep scan (cache, thumbnails, bachi files)",
+                            Modifier.fillMaxWidth(), enabled = !scanning
+                        ) {
+                            scope.launch {
+                                scanning = true
+                                progress = "Shuru ho raha hai..."
+                                val n = try { Engine.deepScan(ctx) { progress = it } } catch (e: Exception) { 0 }
+                                scanning = false
+                                Toast.makeText(ctx, "Deep scan: $n file mili", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                        GlassButton(
+                            "🛠  Root raw scan (sirf rooted phone, advanced)",
+                            Modifier.fillMaxWidth()
+                        ) {
+                            if (!scanning) {
+                                scope.launch {
+                                    scanning = true
+                                    progress = "Chip scan shuru..."
+                                    val msg = try {
+                                        Engine.rootScan(ctx) { progress = it }
+                                    } catch (e: Exception) {
+                                        "Error: ${e.message}"
+                                    }
+                                    scanning = false
+                                    progress = msg
+                                    Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                        if (progress.isNotBlank()) {
+                            Text(progress, fontSize = 12.sp, color = Ui.Muted)
+                        }
+                        if (scanning) {
+                            GlassButton("⏹  Rok do", Modifier.fillMaxWidth()) { Engine.stop = true }
                         }
                     }
                 }
@@ -269,7 +341,8 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                         Text("🛡️", fontSize = 48.sp)
                         Spacer(Modifier.height(10.dp))
                         Text(
-                            "Trash me abhi koi deleted file nahi mili",
+                            if (tab == 0) "Trash me abhi koi deleted file nahi mili"
+                            else "Deep scan chalao, bachi hui files yahan dikhengi",
                             color = Ui.Muted, fontSize = 14.sp
                         )
                     }
@@ -316,6 +389,11 @@ fun StatTile(label: String, value: String, accent: Color, modifier: Modifier = M
 @Composable
 fun ItemCard(item: Item, onOpen: () -> Unit, onRestore: () -> Unit) {
     val c = catOf(item)
+    val (badge, badgeColor) = when (item.type) {
+        "DEEP" -> "Cache" to Ui.Amber
+        "CARVE" -> "Raw" to Ui.Cyan
+        else -> "Deleted" to Ui.Pink
+    }
     GlassCard(Modifier.fillMaxWidth().clickable(onClick = onOpen)) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -340,10 +418,10 @@ fun ItemCard(item: Item, onOpen: () -> Unit, onRestore: () -> Unit) {
                 Spacer(Modifier.width(8.dp))
                 Box(
                     Modifier.clip(CircleShape)
-                        .background(Ui.Pink.copy(alpha = 0.18f))
+                        .background(badgeColor.copy(alpha = 0.18f))
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
-                    Text("Deleted", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Ui.Pink)
+                    Text(badge, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = badgeColor)
                 }
             }
             Spacer(Modifier.height(12.dp))
