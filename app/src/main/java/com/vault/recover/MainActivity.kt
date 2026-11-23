@@ -19,6 +19,8 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -28,11 +30,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
+import java.io.File
 import java.text.DateFormat
 import java.util.Date
 
@@ -106,27 +111,37 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
     val scope = rememberCoroutineScope()
     val dao = remember { AppDb.get(ctx).dao() }
     val allItems by dao.all().collectAsState(initial = emptyList())
-    val all: List<Item> = allItems.filter { it.deletedAt != null }
+    val all = allItems.filter { it.deletedAt != null }
     var tab by remember { mutableIntStateOf(0) }
     var cat by remember { mutableStateOf(Cat.ALL) }
     var busy by remember { mutableStateOf(false) }
     var scanning by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf("") }
     var preview by remember { mutableStateOf<Item?>(null) }
+    var creds by remember { mutableStateOf(MailScanner.load(ctx)) }
+    var emailInput by remember { mutableStateOf("") }
+    var passInput by remember { mutableStateOf("") }
     val free = remember(all.size, busy, scanning) { Engine.freeBytes(ctx) }
 
     val trashCount = all.count { it.type == "FILE" }
     val deepCount = all.count { it.type == "DEEP" || it.type == "CARVE" }
-    val base: List<Item> = all.filter {
-        if (tab == 0) it.type == "FILE" else (it.type == "DEEP" || it.type == "CARVE")
+    val mailCount = all.count { it.type == "MAIL" }
+    val base = all.filter {
+        when (tab) {
+            0 -> it.type == "FILE"
+            1 -> it.type == "DEEP" || it.type == "CARVE"
+            else -> it.type == "MAIL"
+        }
     }
-    val list: List<Item> = if (cat == Cat.ALL) base else base.filter { catOf(it) == cat }
+    val sorted = if (tab == 2) base.sortedBy { it.deletedAt ?: 0L } else base   // email: sabse purani pehle
+    val list = if (cat == Cat.ALL) sorted else sorted.filter { catOf(it) == cat }
     val frac = if (all.isEmpty()) 0.04f else 1f
 
     fun doRestore(item: Item) {
         scope.launch {
             val msg = try {
-                Engine.restore(ctx, item)
+                val real = if (item.type == "MAIL") MailScanner.download(ctx, item) else item
+                if (real == null) "Mail se download nahi ho paya" else Engine.restore(ctx, real)
             } catch (e: Exception) {
                 "Error: ${e.message}"
             }
@@ -134,33 +149,55 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
         }
     }
 
+    fun openItem(item: Item) {
+        val needsDownload = item.type == "MAIL" &&
+            (item.backupPath.isBlank() || !File(item.backupPath).exists())
+        if (!needsDownload) {
+            preview = item
+            return
+        }
+        scope.launch {
+            Toast.makeText(ctx, "Mail se download ho raha hai...", Toast.LENGTH_SHORT).show()
+            val real = try { MailScanner.download(ctx, item) } catch (e: Exception) { null }
+            if (real != null) preview = real
+            else Toast.makeText(ctx, "Download nahi hua (internet ya login check karo)", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    fun runMail(cr: MailScanner.Creds) {
+        scope.launch {
+            scanning = true
+            progress = "Email se connect ho raha hai..."
+            val msg = try {
+                MailScanner.scan(ctx, cr) { progress = it }
+            } catch (e: Exception) {
+                "Error: ${e.message}"
+            }
+            scanning = false
+            progress = msg
+            Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+        }
+    }
+
     Box(
-        Modifier
-            .fillMaxSize()
+        Modifier.fillMaxSize()
             .background(Brush.verticalGradient(listOf(Ui.Bg0, Ui.Bg1, Ui.Bg2)))
     ) {
         Box(
-            Modifier
-                .size(380.dp)
-                .offset(140.dp, (-90).dp)
+            Modifier.size(380.dp).offset(140.dp, (-90).dp)
                 .background(Brush.radialGradient(listOf(Ui.Violet.copy(alpha = 0.35f), Color.Transparent)))
         )
         Box(
-            Modifier
-                .size(320.dp)
-                .align(Alignment.BottomStart)
-                .offset((-120).dp, 100.dp)
+            Modifier.size(320.dp).align(Alignment.BottomStart).offset((-120).dp, 100.dp)
                 .background(Brush.radialGradient(listOf(Ui.Cyan.copy(alpha = 0.18f), Color.Transparent)))
         )
 
         LazyColumn(
-            Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding(),
+            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
             contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
+            // ---------- Header ----------
             item {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -168,9 +205,7 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                         Text("Delete hui files wapas lao.", color = Ui.Muted, fontSize = 13.sp)
                     }
                     Row(
-                        Modifier
-                            .clip(CircleShape)
-                            .background(Ui.Glass)
+                        Modifier.clip(CircleShape).background(Ui.Glass)
                             .border(1.dp, Ui.GlassBorder, CircleShape)
                             .padding(horizontal = 12.dp, vertical = 7.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -182,6 +217,7 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                 }
             }
 
+            // ---------- Low storage warning ----------
             if (free < Engine.RESERVE) {
                 item {
                     GlassCard(Modifier.fillMaxWidth()) {
@@ -197,6 +233,7 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                 }
             }
 
+            // ---------- Hero ring ----------
             item {
                 GlassCard(Modifier.fillMaxWidth()) {
                     Row(
@@ -225,50 +262,111 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                 }
             }
 
+            // ---------- Stats ----------
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     StatTile("Trash me", "$trashCount", Ui.Violet, Modifier.weight(1f))
                     StatTile("Deep scan", "$deepCount", Ui.Pink, Modifier.weight(1f))
-                    StatTile("Khali jagah", fmtSize(free), Ui.Green, Modifier.weight(1f))
+                    StatTile("Email me", "$mailCount", Ui.Blue, Modifier.weight(1f))
                 }
             }
 
+            // ---------- Pill tabs ----------
             item {
                 val pill = RoundedCornerShape(18.dp)
                 Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(pill)
-                        .background(Ui.Glass)
-                        .border(1.dp, Ui.GlassBorder, pill)
-                        .padding(4.dp)
+                    Modifier.fillMaxWidth().clip(pill).background(Ui.Glass)
+                        .border(1.dp, Ui.GlassBorder, pill).padding(4.dp)
                 ) {
-                    listOf("Trash ($trashCount)", "Deep scan ($deepCount)").forEachIndexed { i, t ->
-                        val on = tab == i
-                        Box(
-                            Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(
-                                    if (on) Ui.Main
-                                    else Brush.horizontalGradient(listOf(Color.Transparent, Color.Transparent))
+                    listOf("Trash ($trashCount)", "Deep ($deepCount)", "Email ($mailCount)")
+                        .forEachIndexed { i, t ->
+                            val on = tab == i
+                            Box(
+                                Modifier.weight(1f).clip(RoundedCornerShape(14.dp))
+                                    .background(if (on) Ui.Main else Brush.horizontalGradient(listOf(Color.Transparent, Color.Transparent)))
+                                    .clickable { tab = i }
+                                    .padding(vertical = 11.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    t, fontSize = 12.sp,
+                                    fontWeight = if (on) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (on) Color.White else Ui.Muted
                                 )
-                                .clickable { tab = i }
-                                .padding(vertical = 11.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                t, fontSize = 13.sp,
-                                fontWeight = if (on) FontWeight.Bold else FontWeight.Medium,
-                                color = if (on) Color.White else Ui.Muted
-                            )
+                            }
                         }
-                    }
                 }
             }
 
+            // ---------- Actions ----------
             item {
-                if (!access) {
+                val cr = creds
+                if (tab == 2) {
+                    // ===== Email tab =====
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        if (cr == null) {
+                            GlassCard(Modifier.fillMaxWidth()) {
+                                Column(
+                                    Modifier.padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text("📧  Apna email scan karo", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 15.sp)
+                                    Text(
+                                        "Gmail ke liye normal password nahi, App password chahiye: Google Account → Security → 2-Step Verification on karo → App passwords. Password sirf is phone me save hota hai.",
+                                        fontSize = 12.sp, color = Ui.Muted, lineHeight = 17.sp
+                                    )
+                                    OutlinedTextField(
+                                        value = emailInput,
+                                        onValueChange = { emailInput = it },
+                                        label = { Text("Email") },
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    OutlinedTextField(
+                                        value = passInput,
+                                        onValueChange = { passInput = it },
+                                        label = { Text("App password") },
+                                        singleLine = true,
+                                        visualTransformation = PasswordVisualTransformation(),
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            }
+                            GradientButton(
+                                "📧  Login aur scan shuru karo",
+                                Modifier.fillMaxWidth(),
+                                enabled = !scanning && emailInput.contains("@") && passInput.length >= 6
+                            ) {
+                                val newCreds = MailScanner.Creds(emailInput.trim(), passInput.replace(" ", ""))
+                                MailScanner.save(ctx, newCreds)
+                                creds = newCreds
+                                passInput = ""
+                                runMail(newCreds)
+                            }
+                        } else {
+                            Text("Account: ${cr.email}", fontSize = 13.sp, color = Ui.Muted)
+                            GradientButton(
+                                if (scanning) "Scan chal raha hai..." else "📧  Email scan karo",
+                                Modifier.fillMaxWidth(), enabled = !scanning
+                            ) { runMail(cr) }
+                            GlassButton("Logout (password hatao)", Modifier.fillMaxWidth()) {
+                                if (!scanning) {
+                                    MailScanner.clear(ctx)
+                                    creds = null
+                                    progress = ""
+                                }
+                            }
+                        }
+                        if (progress.isNotBlank()) {
+                            Text(progress, fontSize = 12.sp, color = Ui.Muted)
+                        }
+                        if (scanning) {
+                            GlassButton("⏹  Rok do", Modifier.fillMaxWidth()) { Engine.stop = true }
+                        }
+                    }
+                } else if (!access) {
                     GradientButton("Storage access allow karo", Modifier.fillMaxWidth(), onClick = onAllow)
                 } else if (tab == 0) {
                     GradientButton(
@@ -277,11 +375,7 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                     ) {
                         scope.launch {
                             busy = true
-                            val n = try {
-                                Engine.sync(ctx, true)
-                            } catch (e: Exception) {
-                                0
-                            }
+                            val n = try { Engine.sync(ctx, true) } catch (e: Exception) { 0 }
                             busy = false
                             Toast.makeText(
                                 ctx,
@@ -299,11 +393,7 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                             scope.launch {
                                 scanning = true
                                 progress = "Shuru ho raha hai..."
-                                val n = try {
-                                    Engine.deepScan(ctx) { progress = it }
-                                } catch (e: Exception) {
-                                    0
-                                }
+                                val n = try { Engine.deepScan(ctx) { progress = it } } catch (e: Exception) { 0 }
                                 scanning = false
                                 Toast.makeText(ctx, "Deep scan: $n file mili", Toast.LENGTH_LONG).show()
                             }
@@ -337,14 +427,14 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                 }
             }
 
+            // ---------- Category chips ----------
             item {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(Cat.entries) { c ->
+                    items(Cat.values().toList()) { c ->
                         val on = cat == c
                         val s = RoundedCornerShape(50)
                         Row(
-                            Modifier
-                                .clip(s)
+                            Modifier.clip(s)
                                 .background(if (on) c.color.copy(alpha = 0.25f) else Ui.Glass)
                                 .border(1.dp, if (on) c.color else Ui.GlassBorder, s)
                                 .clickable { cat = c }
@@ -359,28 +449,30 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                 }
             }
 
+            // ---------- List ----------
             if (list.isEmpty()) {
                 item {
                     Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 40.dp),
+                        Modifier.fillMaxWidth().padding(vertical = 40.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text("🛡️", fontSize = 48.sp)
                         Spacer(Modifier.height(10.dp))
                         Text(
-                            if (tab == 0) "Trash me abhi koi deleted file nahi mili"
-                            else "Deep scan chalao, bachi hui files yahan dikhengi",
+                            when (tab) {
+                                0 -> "Trash me abhi koi deleted file nahi mili"
+                                1 -> "Deep scan chalao, bachi hui files yahan dikhengi"
+                                else -> "Email scan chalao, purane attachments yahan dikhenge"
+                            },
                             color = Ui.Muted, fontSize = 14.sp
                         )
                     }
                 }
             } else {
-                items(items = list, key = { item: Item -> item.id }) { item: Item ->
+                items(list, key = { it.id }) { item ->
                     ItemCard(
-                        item = item,
-                        onOpen = { preview = item },
+                        item,
+                        onOpen = { openItem(item) },
                         onRestore = { doRestore(item) }
                     )
                 }
@@ -389,6 +481,7 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
         }
     }
 
+    // ---------- Preview popup ----------
     preview?.let { p ->
         PreviewDialog(
             item = p,
@@ -420,19 +513,14 @@ fun ItemCard(item: Item, onOpen: () -> Unit, onRestore: () -> Unit) {
     val (badge, badgeColor) = when (item.type) {
         "DEEP" -> "Cache" to Ui.Amber
         "CARVE" -> "Raw" to Ui.Cyan
+        "MAIL" -> "Mail" to Ui.Blue
         else -> "Deleted" to Ui.Pink
     }
-    GlassCard(
-        Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onOpen)
-    ) {
+    GlassCard(Modifier.fillMaxWidth().clickable(onClick = onOpen)) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
-                    Modifier
-                        .size(48.dp)
-                        .clip(RoundedCornerShape(15.dp))
+                    Modifier.size(48.dp).clip(RoundedCornerShape(15.dp))
                         .background(Brush.linearGradient(listOf(c.color.copy(alpha = 0.35f), c.color.copy(alpha = 0.10f)))),
                     contentAlignment = Alignment.Center
                 ) { Text(c.emoji, fontSize = 22.sp) }
@@ -451,8 +539,7 @@ fun ItemCard(item: Item, onOpen: () -> Unit, onRestore: () -> Unit) {
                 }
                 Spacer(Modifier.width(8.dp))
                 Box(
-                    Modifier
-                        .clip(CircleShape)
+                    Modifier.clip(CircleShape)
                         .background(badgeColor.copy(alpha = 0.18f))
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
