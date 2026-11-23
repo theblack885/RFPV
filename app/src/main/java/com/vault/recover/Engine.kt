@@ -6,6 +6,7 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.media.MediaScannerConnection
 import android.os.Build
+import android.os.Bundle
 import android.provider.MediaStore
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
@@ -29,28 +30,37 @@ object Engine {
             val now = System.currentTimeMillis()
             var added = 0
 
-            // ---- Files: photo, video, song, documents ----
+            // ---- Files: photo, video, song, documents (trash wali files samet) ----
             val proj = arrayOf(
                 MediaStore.Files.FileColumns.DATA,
                 MediaStore.Files.FileColumns.SIZE,
                 MediaStore.Files.FileColumns.DATE_MODIFIED
             )
+            val trashRegex = Regex("^\\.trashed-\\d+-")
+            val args = Bundle().apply {
+                if (Build.VERSION.SDK_INT >= 30) {
+                    putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_INCLUDE)
+                }
+            }
             c.contentResolver.query(
-                MediaStore.Files.getContentUri("external"), proj, null, null, null
+                MediaStore.Files.getContentUri("external"), proj, args, null
             )?.use { cur ->
                 while (cur.moveToNext()) {
-                    val path = cur.getString(0) ?: continue
-                    if (path.contains("/Android/data/") || path.contains("/Android/obb/")) continue
-                    val f = File(path)
-                    if (f.name.startsWith(".") || path.contains("/.thumbnails/")) continue
+                    val rawPath = cur.getString(0) ?: continue
+                    if (rawPath.contains("/Android/data/") || rawPath.contains("/Android/obb/")) continue
+                    val f = File(rawPath)
+                    val cleanName = f.name.replace(trashRegex, "")
+                    if (cleanName.startsWith(".") || rawPath.contains("/.thumbnails/")) continue
                     val size = cur.getLong(1)
-                    if (size <= 0 || !f.isFile) continue
+                    if (size <= 0) continue
+                    // trash wali file ka original path nikalo
+                    val path = if (cleanName != f.name) File(f.parentFile, cleanName).path else rawPath
                     val id = "$path|$size|${cur.getLong(2)}"
-                    if (id in known) continue
-                    val dest = File(vault, "${System.nanoTime()}_${f.name}")
+                    if (id in known || !f.isFile) continue
+                    val dest = File(vault, "${System.nanoTime()}_$cleanName")
                     try {
                         f.copyTo(dest, true)
-                        dao.insert(Item(id, "FILE", f.name, path, dest.absolutePath, size, now, null))
+                        dao.insert(Item(id, "FILE", cleanName, path, dest.absolutePath, size, now, null))
                         known.add(id)
                         added++
                     } catch (e: Exception) {
