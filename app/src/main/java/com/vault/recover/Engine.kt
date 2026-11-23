@@ -166,9 +166,6 @@ object Engine {
 
     // =====================================================================
     //  LEVEL 2: Deep scan (bina root)
-    //  Puri storage me wo photo/video/music dhundo jo gallery (MediaStore) me
-    //  nahi hain: cache, thumbnails, hidden folders, bina extension wali files.
-    //  Kuch copy nahi hota, file apni jagah par hi dikhti hai.
     // =====================================================================
     private fun sniff(f: File): String? {
         val h = ByteArray(12)
@@ -205,7 +202,6 @@ object Engine {
         val known = dao.ids().toHashSet()
         val now = System.currentTimeMillis()
 
-        // Gallery me jo files abhi dikh rahi hain unhe chhodna hai
         val indexed = HashSet<String>()
         try {
             c.contentResolver.query(
@@ -266,7 +262,6 @@ object Engine {
 
     // =====================================================================
     //  LEVEL 3: Root raw scan (sirf rooted phone)
-    //  Chip (userdata partition) se seedha JPEG photos nikalta hai.
     // =====================================================================
     private suspend fun carve(
         c: Context, input: InputStream, outDir: File, now: Long,
@@ -313,7 +308,6 @@ object Engine {
                 val b = buf[i].toInt() and 0xFF
                 val o = out
                 if (o == null) {
-                    // JPEG shuru: FF D8 FF
                     if (p2 == 0xFF && p1 == 0xD8 && b == 0xFF &&
                         savedBytes < MAX_CARVE && freeBytes(c) > RESERVE
                     ) {
@@ -411,7 +405,6 @@ object Engine {
     }
 
     suspend fun removeFromVault(c: Context, item: Item) = withContext(Dispatchers.IO) {
-        // DEEP wali file kisi aur app ki hoti hai, use delete nahi karna
         if (item.type != "DEEP") File(item.backupPath).delete()
         AppDb.get(c).dao().delete(item)
     }
