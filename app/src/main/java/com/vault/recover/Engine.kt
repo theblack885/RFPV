@@ -1,5 +1,6 @@
 package com.vault.recover
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
@@ -7,7 +8,9 @@ import android.content.pm.PackageManager
 import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.provider.MediaStore
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -17,6 +20,15 @@ import java.io.File
 
 object Engine {
     private val lock = Mutex()
+
+    /** Android 11+ me All-files access, purane Android me normal storage permission. */
+    fun hasAccess(c: Context): Boolean =
+        if (Build.VERSION.SDK_INT >= 30) {
+            Environment.isExternalStorageManager()
+        } else {
+            ContextCompat.checkSelfPermission(c, Manifest.permission.READ_EXTERNAL_STORAGE) ==
+                PackageManager.PERMISSION_GRANTED
+        }
 
     fun vaultDir(c: Context): File =
         File(c.getExternalFilesDir(null), "vault").apply { mkdirs() }
