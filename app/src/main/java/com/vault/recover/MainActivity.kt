@@ -106,7 +106,7 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
     val scope = rememberCoroutineScope()
     val dao = remember { AppDb.get(ctx).dao() }
     val allItems by dao.all().collectAsState(initial = emptyList())
-    val all = allItems.filter { it.deletedAt != null }
+    val all: List<Item> = allItems.filter { it.deletedAt != null }
     var tab by remember { mutableIntStateOf(0) }
     var cat by remember { mutableStateOf(Cat.ALL) }
     var busy by remember { mutableStateOf(false) }
@@ -117,36 +117,50 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
 
     val trashCount = all.count { it.type == "FILE" }
     val deepCount = all.count { it.type == "DEEP" || it.type == "CARVE" }
-    val base = all.filter { if (tab == 0) it.type == "FILE" else (it.type == "DEEP" || it.type == "CARVE") }
-    val list = if (cat == Cat.ALL) base else base.filter { catOf(it) == cat }
+    val base: List<Item> = all.filter {
+        if (tab == 0) it.type == "FILE" else (it.type == "DEEP" || it.type == "CARVE")
+    }
+    val list: List<Item> = if (cat == Cat.ALL) base else base.filter { catOf(it) == cat }
     val frac = if (all.isEmpty()) 0.04f else 1f
 
     fun doRestore(item: Item) {
         scope.launch {
-            val msg = try { Engine.restore(ctx, item) } catch (e: Exception) { "Error: ${e.message}" }
+            val msg = try {
+                Engine.restore(ctx, item)
+            } catch (e: Exception) {
+                "Error: ${e.message}"
+            }
             Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
         }
     }
 
     Box(
-        Modifier.fillMaxSize()
+        Modifier
+            .fillMaxSize()
             .background(Brush.verticalGradient(listOf(Ui.Bg0, Ui.Bg1, Ui.Bg2)))
     ) {
         Box(
-            Modifier.size(380.dp).offset(140.dp, (-90).dp)
+            Modifier
+                .size(380.dp)
+                .offset(140.dp, (-90).dp)
                 .background(Brush.radialGradient(listOf(Ui.Violet.copy(alpha = 0.35f), Color.Transparent)))
         )
         Box(
-            Modifier.size(320.dp).align(Alignment.BottomStart).offset((-120).dp, 100.dp)
+            Modifier
+                .size(320.dp)
+                .align(Alignment.BottomStart)
+                .offset((-120).dp, 100.dp)
                 .background(Brush.radialGradient(listOf(Ui.Cyan.copy(alpha = 0.18f), Color.Transparent)))
         )
 
         LazyColumn(
-            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding(),
             contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // ---------- Header ----------
             item {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -154,7 +168,9 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                         Text("Delete hui files wapas lao.", color = Ui.Muted, fontSize = 13.sp)
                     }
                     Row(
-                        Modifier.clip(CircleShape).background(Ui.Glass)
+                        Modifier
+                            .clip(CircleShape)
+                            .background(Ui.Glass)
                             .border(1.dp, Ui.GlassBorder, CircleShape)
                             .padding(horizontal = 12.dp, vertical = 7.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -166,7 +182,6 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                 }
             }
 
-            // ---------- Low storage warning ----------
             if (free < Engine.RESERVE) {
                 item {
                     GlassCard(Modifier.fillMaxWidth()) {
@@ -182,7 +197,6 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                 }
             }
 
-            // ---------- Hero ring ----------
             item {
                 GlassCard(Modifier.fillMaxWidth()) {
                     Row(
@@ -211,7 +225,6 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                 }
             }
 
-            // ---------- Stats ----------
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     StatTile("Trash me", "$trashCount", Ui.Violet, Modifier.weight(1f))
@@ -220,18 +233,26 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                 }
             }
 
-            // ---------- Pill tabs ----------
             item {
                 val pill = RoundedCornerShape(18.dp)
                 Row(
-                    Modifier.fillMaxWidth().clip(pill).background(Ui.Glass)
-                        .border(1.dp, Ui.GlassBorder, pill).padding(4.dp)
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(pill)
+                        .background(Ui.Glass)
+                        .border(1.dp, Ui.GlassBorder, pill)
+                        .padding(4.dp)
                 ) {
                     listOf("Trash ($trashCount)", "Deep scan ($deepCount)").forEachIndexed { i, t ->
                         val on = tab == i
                         Box(
-                            Modifier.weight(1f).clip(RoundedCornerShape(14.dp))
-                                .background(if (on) Ui.Main else Brush.horizontalGradient(listOf(Color.Transparent, Color.Transparent)))
+                            Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(
+                                    if (on) Ui.Main
+                                    else Brush.horizontalGradient(listOf(Color.Transparent, Color.Transparent))
+                                )
                                 .clickable { tab = i }
                                 .padding(vertical = 11.dp),
                             contentAlignment = Alignment.Center
@@ -246,7 +267,6 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                 }
             }
 
-            // ---------- Actions ----------
             item {
                 if (!access) {
                     GradientButton("Storage access allow karo", Modifier.fillMaxWidth(), onClick = onAllow)
@@ -257,7 +277,11 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                     ) {
                         scope.launch {
                             busy = true
-                            val n = try { Engine.sync(ctx, true) } catch (e: Exception) { 0 }
+                            val n = try {
+                                Engine.sync(ctx, true)
+                            } catch (e: Exception) {
+                                0
+                            }
                             busy = false
                             Toast.makeText(
                                 ctx,
@@ -275,7 +299,11 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                             scope.launch {
                                 scanning = true
                                 progress = "Shuru ho raha hai..."
-                                val n = try { Engine.deepScan(ctx) { progress = it } } catch (e: Exception) { 0 }
+                                val n = try {
+                                    Engine.deepScan(ctx) { progress = it }
+                                } catch (e: Exception) {
+                                    0
+                                }
                                 scanning = false
                                 Toast.makeText(ctx, "Deep scan: $n file mili", Toast.LENGTH_LONG).show()
                             }
@@ -309,14 +337,14 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                 }
             }
 
-            // ---------- Category chips ----------
             item {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(Cat.values().toList()) { c ->
+                    items(Cat.entries) { c ->
                         val on = cat == c
                         val s = RoundedCornerShape(50)
                         Row(
-                            Modifier.clip(s)
+                            Modifier
+                                .clip(s)
                                 .background(if (on) c.color.copy(alpha = 0.25f) else Ui.Glass)
                                 .border(1.dp, if (on) c.color else Ui.GlassBorder, s)
                                 .clickable { cat = c }
@@ -331,11 +359,12 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                 }
             }
 
-            // ---------- List ----------
             if (list.isEmpty()) {
                 item {
                     Column(
-                        Modifier.fillMaxWidth().padding(vertical = 40.dp),
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 40.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text("🛡️", fontSize = 48.sp)
@@ -348,9 +377,9 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                     }
                 }
             } else {
-                items(list, key = { it.id }) { item ->
+                items(items = list, key = { item: Item -> item.id }) { item: Item ->
                     ItemCard(
-                        item,
+                        item = item,
                         onOpen = { preview = item },
                         onRestore = { doRestore(item) }
                     )
@@ -360,7 +389,6 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
         }
     }
 
-    // ---------- Preview popup ----------
     preview?.let { p ->
         PreviewDialog(
             item = p,
@@ -394,11 +422,17 @@ fun ItemCard(item: Item, onOpen: () -> Unit, onRestore: () -> Unit) {
         "CARVE" -> "Raw" to Ui.Cyan
         else -> "Deleted" to Ui.Pink
     }
-    GlassCard(Modifier.fillMaxWidth().clickable(onClick = onOpen)) {
+    GlassCard(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpen)
+    ) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
-                    Modifier.size(48.dp).clip(RoundedCornerShape(15.dp))
+                    Modifier
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(15.dp))
                         .background(Brush.linearGradient(listOf(c.color.copy(alpha = 0.35f), c.color.copy(alpha = 0.10f)))),
                     contentAlignment = Alignment.Center
                 ) { Text(c.emoji, fontSize = 22.sp) }
@@ -417,7 +451,8 @@ fun ItemCard(item: Item, onOpen: () -> Unit, onRestore: () -> Unit) {
                 }
                 Spacer(Modifier.width(8.dp))
                 Box(
-                    Modifier.clip(CircleShape)
+                    Modifier
+                        .clip(CircleShape)
                         .background(badgeColor.copy(alpha = 0.18f))
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
