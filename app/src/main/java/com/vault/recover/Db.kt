@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.Flow
 @Entity(tableName = "items")
 data class Item(
     @PrimaryKey val id: String,
-    val type: String,          // FILE, DEEP, CARVE or APP
+    val type: String,          // FILE, DEEP, CARVE, MAIL or APP
     val name: String,
     val originalPath: String,  // file path, or package name for APP
     val backupPath: String,
@@ -41,6 +41,9 @@ interface ItemDao {
 
     @Query("UPDATE items SET originalPath = :p, deletedAt = NULL WHERE id = :id")
     suspend fun relocate(id: String, p: String)
+
+    @Query("UPDATE items SET backupPath = :p WHERE id = :id")
+    suspend fun setBackup(id: String, p: String)
 
     @Delete
     suspend fun delete(i: Item)
