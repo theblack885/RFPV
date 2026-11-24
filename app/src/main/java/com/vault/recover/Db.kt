@@ -7,9 +7,9 @@ import kotlinx.coroutines.flow.Flow
 @Entity(tableName = "items")
 data class Item(
     @PrimaryKey val id: String,
-    val type: String,          // FILE, DEEP, CARVE, MAIL or APP
+    val type: String,          // FILE, DEEP, CARVE, MAIL, ZIP, WA
     val name: String,
-    val originalPath: String,  // file path, or package name for APP
+    val originalPath: String,
     val backupPath: String,
     val size: Long,
     val backedUpAt: Long,
@@ -20,6 +20,9 @@ data class Item(
 interface ItemDao {
     @Query("SELECT * FROM items ORDER BY COALESCE(deletedAt, backedUpAt) DESC")
     fun all(): Flow<List<Item>>
+
+    @Query("SELECT * FROM items")
+    suspend fun snapshot(): List<Item>
 
     @Query("SELECT id FROM items")
     suspend fun ids(): List<String>
