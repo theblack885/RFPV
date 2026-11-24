@@ -22,6 +22,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
+import java.io.RandomAccessFile
+import java.security.MessageDigest
 
 object Engine {
     private val lock = Mutex()
@@ -30,12 +32,11 @@ object Engine {
     /** Scan rokne ke liye (UI ka "Rok do" button). */
     @Volatile var stop = false
 
-    /** Phone me itni jagah hamesha khali rahegi. */
-    const val RESERVE = 1_500_000_000L          // 1.5 GB
-    /** Isse badi file copy nahi hogi. */
-    const val MAX_FILE = 300L * 1024 * 1024     // 300 MB
-    private const val MAX_DEEP = 5000           // deep scan me max itne results
-    private const val MAX_CARVE = 1_500_000_000L // root scan me max itna data save
+    const val RESERVE = 1_000_000_000L          // phone me 1 GB khali jagah hamesha bachi rahe
+    const val VAULT_LIMIT = 1_099_511_627_776L  // app ka vault max 1 TB
+    const val MAX_FILE = 300L * 1024 * 1024     // 300 MB se badi file copy nahi hogi
+    private const val MAX_DEEP = 5000
+    private const val MAX_CARVE = 1_500_000_000L
 
     private val trashedPrefix = Regex("^\\.trashed-(\\d+)-")
     private val trashDirName = Regex("(?i)trash|recycle|recently ?deleted|\\.deleted")
@@ -50,14 +51,64 @@ object Engine {
                 PackageManager.PERMISSION_GRANTED
         }
 
-    fun vaultDir(c: Context): File =
-        File(c.getExternalFilesDir(null), "vault").apply { mkdirs() }
+    // ---------------- Vault ki jagah (phone ya SD card) ----------------
+    private fun prefs(c: Context) = c.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
-    fun freeBytes(c: Context): Long =
+    fun sdAppDir(c: Context): File? =
+        c.getExternalFilesDirs(null).drop(1).firstOrNull {
+            it != null && Environment.getExternalStorageState(it) == Environment.MEDIA_MOUNTED
+        }
+
+    fun useSd(c: Context): Boolean = prefs(c).getBoolean("vault_sd", false) && sdAppDir(c) != null
+
+    fun vaultRoot(c: Context, sd: Boolean): File {
+        val base = if (sd) sdAppDir(c) else c.getExternalFilesDir(null)
+        return File(base ?: c.filesDir, "vault").apply { mkdirs() }
+    }
+
+    fun vaultDir(c: Context): File = vaultRoot(c, useSd(c))
+
+    /** Phone ya SD card me asli khali jagah. */
+    fun phoneFree(c: Context): Long =
         try { StatFs(vaultDir(c).path).availableBytes } catch (e: Exception) { Long.MAX_VALUE }
 
-    /** Jahan restore karne par file jati hai jab uski purani jagah pata na ho. */
-    private fun restoredPathFor(name: String): String {
+    @Volatile private var usedCache = 0L
+    @Volatile private var usedAt = 0L
+
+    /** Vault abhi kitni jagah le raha hai (har 3 second me ek baar hi ginta hai). */
+    fun vaultUsed(c: Context): Long {
+        val now = System.currentTimeMillis()
+        if (now - usedAt > 3000) {
+            usedCache = try {
+                vaultDir(c).walkTopDown().filter { it.isFile }.sumOf { it.length() }
+            } catch (e: Exception) {
+                0L
+            }
+            usedAt = now
+        }
+        return usedCache
+    }
+
+    /** Copy ke liye kitni jagah milegi: phone ki khali jagah aur 1 TB limit me se jo kam ho. */
+    fun freeBytes(c: Context): Long = minOf(phoneFree(c), VAULT_LIMIT - vaultUsed(c))
+
+    /** Phone ki internal storage + SD card ke roots. */
+    fun storageRoots(c: Context): List<File> {
+        val roots = ArrayList<File>()
+        roots.add(Environment.getExternalStorageDirectory())
+        c.getExternalFilesDirs(null).forEach { d ->
+            val p = d?.absolutePath ?: return@forEach
+            val i = p.indexOf("/Android/")
+            if (i > 0) {
+                val r = File(p.substring(0, i))
+                if (roots.none { it.absolutePath == r.absolutePath }) roots.add(r)
+            }
+        }
+        return roots
+    }
+
+    /** Restore karne par file jaha jati hai jab uski purani jagah pata na ho. */
+    fun restoredPathFor(name: String): String {
         val cat = catOf(Item("", "FILE", name, "", "", 0, 0, null))
         val base = when (cat) {
             Cat.PHOTO -> Environment.DIRECTORY_PICTURES
@@ -134,7 +185,9 @@ object Engine {
                     }
                 } catch (e: Exception) { }
             }
-            try { walk(Environment.getExternalStorageDirectory(), 0) } catch (e: Exception) { }
+            for (r in storageRoots(c)) {
+                try { walk(r, 0) } catch (e: Exception) { }
+            }
 
             var added = 0
             for (cand in cands) {
@@ -160,6 +213,7 @@ object Engine {
                     if (e is IOException) break
                 }
             }
+            if (added > 0 && !force) Notifier.found(c, added)
             added
         }
     }
@@ -215,7 +269,7 @@ object Engine {
         var seen = 0
         var added = 0
         val stack = ArrayList<File>()
-        stack.add(Environment.getExternalStorageDirectory())
+        stack.addAll(storageRoots(c))          // phone + SD card
 
         while (stack.isNotEmpty() && added < MAX_DEEP && !stop) {
             val d = stack.removeAt(stack.size - 1)
@@ -380,6 +434,13 @@ object Engine {
         return d
     }
 
+    /** Mail ya Takeout ki file ho to pehle download/extract karo. */
+    suspend fun ensureLocal(c: Context, item: Item): Item? = when (item.type) {
+        "MAIL" -> MailScanner.download(c, item)
+        "ZIP" -> TakeoutScanner.extract(c, item)
+        else -> item
+    }
+
     suspend fun restore(c: Context, item: Item): String = withContext(Dispatchers.IO) {
         val src = File(item.backupPath)
         if (!src.exists()) return@withContext "File ab nahi mili"
@@ -394,6 +455,15 @@ object Engine {
             return@withContext "Install screen khul gayi"
         }
 
+        val phoneFreeNow = try {
+            StatFs(Environment.getExternalStorageDirectory().path).availableBytes
+        } catch (e: Exception) {
+            Long.MAX_VALUE
+        }
+        if (phoneFreeNow < item.size + 50L * 1024 * 1024) {
+            return@withContext "Phone me jagah kam hai. ${fmtSize(item.size)} wapas laane ke liye thodi jagah khali karo."
+        }
+
         val orig = File(item.originalPath)
         val target = try {
             copyBack(c, src, orig)
@@ -404,8 +474,137 @@ object Engine {
         "Wapas aa gayi: ${target.absolutePath}"
     }
 
+    /** Kisi bhi type ki item ko recover karo (mail/zip ho to download karke). */
+    suspend fun restoreAny(c: Context, item: Item): String {
+        val real = try { ensureLocal(c, item) } catch (e: Exception) { null }
+            ?: return "Download nahi ho paya (internet ya login check karo)"
+        return try { restore(c, real) } catch (e: Exception) { "Error: ${e.message}" }
+    }
+
     suspend fun removeFromVault(c: Context, item: Item) = withContext(Dispatchers.IO) {
-        if (item.type != "DEEP") File(item.backupPath).delete()
+        // DEEP aur WA ki file kisi aur app ki hoti hai, use delete nahi karna
+        if (item.type in setOf("FILE", "CARVE", "MAIL", "ZIP") && item.backupPath.isNotBlank()) {
+            File(item.backupPath).delete()
+        }
         AppDb.get(c).dao().delete(item)
     }
+
+    // =====================================================================
+    //  Duplicate hatao
+    // =====================================================================
+    private fun quickHash(f: File): String {
+        val md = MessageDigest.getInstance("SHA-1")
+        val chunk = 4L * 1024 * 1024
+        RandomAccessFile(f, "r").use { r ->
+            val len = r.length()
+            val buf = ByteArray(1 shl 16)
+            fun feed(from: Long, count: Long) {
+                r.seek(from)
+                var left = count
+                while (left > 0) {
+                    val n = r.read(buf, 0, minOf(buf.size.toLong(), left).toInt())
+                    if (n <= 0) break
+                    md.update(buf, 0, n)
+                    left -= n
+                }
+            }
+            feed(0, minOf(len, chunk))
+            if (len > chunk * 2) feed(len - chunk, chunk)
+            md.update(len.toString().toByteArray())
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    suspend fun dedupe(c: Context): Int = withContext(Dispatchers.IO) {
+        val dao = AppDb.get(c).dao()
+        val items = dao.snapshot().filter {
+            it.deletedAt != null && it.backupPath.isNotBlank() && File(it.backupPath).isFile
+        }
+        var removed = 0
+        val groups = items.groupBy { File(it.backupPath).length() }.values.filter { it.size > 1 }
+        for (grp in groups) {
+            val seen = HashSet<String>()
+            for (x in grp.sortedBy { it.deletedAt ?: 0L }) {
+                val h = try { quickHash(File(x.backupPath)) } catch (e: Exception) { continue }
+                if (!seen.add(h)) {
+                    removeFromVault(c, x)
+                    removed++
+                }
+            }
+        }
+        removed
+    }
+
+    // =====================================================================
+    //  Vault saaf karna
+    // =====================================================================
+    /** Jo items recover ho chuki hain unki vault copy hatao. */
+    suspend fun cleanupRecovered(c: Context): Int = withContext(Dispatchers.IO) {
+        var n = 0
+        for (x in AppDb.get(c).dao().snapshot()) {
+            if (x.deletedAt == null) {
+                removeFromVault(c, x)
+                n++
+            }
+        }
+        n
+    }
+
+    /** `days` din se purani mili hui items ki vault copy hatao. */
+    suspend fun cleanupOld(c: Context, days: Int): Int = withContext(Dispatchers.IO) {
+        val dao = AppDb.get(c).dao()
+        val cutoff = System.currentTimeMillis() - days * 86_400_000L
+        var n = 0
+        for (x in dao.snapshot()) {
+            if (x.backedUpAt >= cutoff) continue
+            when (x.type) {
+                "FILE", "CARVE" -> {
+                    removeFromVault(c, x)
+                    n++
+                }
+                "MAIL", "ZIP" -> if (x.backupPath.isNotBlank()) {
+                    File(x.backupPath).delete()
+                    dao.setBackup(x.id, "")
+                    n++
+                }
+            }
+        }
+        n
+    }
+
+    // =====================================================================
+    //  Vault ko SD card me / phone me move karo
+    // =====================================================================
+    suspend fun moveVault(c: Context, toSd: Boolean, onProgress: (String) -> Unit): String =
+        withContext(Dispatchers.IO) {
+            if (toSd && sdAppDir(c) == null) return@withContext "SD card nahi mila"
+            val oldRoot = vaultDir(c)
+            val newRoot = vaultRoot(c, toSd)
+            if (oldRoot.absolutePath == newRoot.absolutePath) {
+                prefs(c).edit().putBoolean("vault_sd", toSd).apply()
+                return@withContext "Vault pehle se wahin hai"
+            }
+            val dao = AppDb.get(c).dao()
+            var moved = 0
+            var failed = 0
+            for (x in dao.snapshot()) {
+                if (x.backupPath.isBlank()) continue
+                val src = File(x.backupPath)
+                if (!src.absolutePath.startsWith(oldRoot.absolutePath + File.separator) || !src.exists()) continue
+                val dst = File(newRoot, src.relativeTo(oldRoot).path)
+                try {
+                    dst.parentFile?.mkdirs()
+                    src.copyTo(dst, true)
+                    src.delete()
+                    dao.setBackup(x.id, dst.absolutePath)
+                    moved++
+                    if (moved % 10 == 0) onProgress("Vault move: $moved files ho gayi")
+                } catch (e: Exception) {
+                    dst.delete()
+                    failed++
+                }
+            }
+            prefs(c).edit().putBoolean("vault_sd", toSd).apply()
+            "Vault move poora: $moved files, $failed fail"
+        }
 }
