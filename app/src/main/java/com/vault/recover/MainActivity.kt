@@ -119,6 +119,7 @@ class MainActivity : FragmentActivity() {
 }
 
 fun fmtSize(b: Long): String = when {
+    b >= 1L shl 40 -> "%.2f TB".format(b / 1099511627776.0)
     b >= 1L shl 30 -> "%.1f GB".format(b / 1073741824.0)
     b >= 1L shl 20 -> "%.1f MB".format(b / 1048576.0)
     b >= 1L shl 10 -> "%.0f KB".format(b / 1024.0)
@@ -163,7 +164,12 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
     val selected = remember { mutableStateListOf<String>() }
     val selecting = selected.isNotEmpty()
 
-    val free = remember(all.size, busy, scanning, tick) { Engine.freeBytes(ctx) }
+    val free by produceState(Long.MAX_VALUE, all.size, busy, scanning, tick) {
+        value = withContext(Dispatchers.IO) { Engine.phoneFree(ctx) }
+    }
+    val used by produceState(0L, all.size, busy, scanning, tick) {
+        value = withContext(Dispatchers.IO) { Engine.vaultUsed(ctx) }
+    }
     val pinSet = remember(tick) { AppLock.hasPin(ctx) }
     val bioOn = remember(tick) { AppLock.bioEnabled(ctx) }
     val vaultOnSd = remember(tick) { Engine.useSd(ctx) }
@@ -383,7 +389,7 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                             Text("⚠️  Storage kam hai", fontWeight = FontWeight.Bold, color = Ui.Amber, fontSize = 14.sp)
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                "Sirf ${fmtSize(free)} khali hai. Nayi files vault me copy nahi ho paengi. Tools me safai karo ya vault SD card me bhejo.",
+                                "Phone me sirf ${fmtSize(free)} khali hai. Nayi files vault me tabhi aayengi jab kam se kam 1 GB khali ho. Tools me safai karo ya vault SD card me bhejo.",
                                 fontSize = 12.sp, color = Ui.Muted, lineHeight = 17.sp
                             )
                         }
@@ -422,7 +428,7 @@ fun Screen(access: Boolean, onAllow: () -> Unit) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     StatTile("Trash + Deep", "${(counts[Src.TRASH] ?: 0) + (counts[Src.DEEP] ?: 0)}", Ui.Violet, Modifier.weight(1f))
                     StatTile("Email + Takeout", "${(counts[Src.MAIL] ?: 0) + (counts[Src.TAKEOUT] ?: 0)}", Ui.Pink, Modifier.weight(1f))
-                    StatTile("Khali jagah", fmtSize(free), Ui.Green, Modifier.weight(1f))
+                    StatTile("Vault / 1 TB", fmtSize(used), Ui.Green, Modifier.weight(1f))
                 }
             }
 
